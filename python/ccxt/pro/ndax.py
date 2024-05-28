@@ -56,12 +56,12 @@ class ndax(ccxt.async_support.ndax):
         messageHash = name + ':' + market['id']
         url = self.urls['api']['ws']
         requestId = self.request_id()
-        payload = {
+        payload: dict = {
             'OMSId': omsId,
             'InstrumentId': int(market['id']),  # conditionally optional
             # 'Symbol': market['info']['symbol'],  # conditionally optional
         }
-        request = {
+        request: dict = {
             'm': 0,  # message type, 0 request, 1 reply, 2 subscribe, 3 event, unsubscribe, 5 error
             'i': requestId,  # sequence number identifies an individual request or request-and-response pair, to your application
             'n': name,  # function name is the name of the function being called or that the server is responding to, the server echoes your call
@@ -122,12 +122,12 @@ class ndax(ccxt.async_support.ndax):
         messageHash = name + ':' + market['id']
         url = self.urls['api']['ws']
         requestId = self.request_id()
-        payload = {
+        payload: dict = {
             'OMSId': omsId,
             'InstrumentId': int(market['id']),  # conditionally optional
             'IncludeLastCount': 100,  # the number of previous trades to retrieve in the immediate snapshot, 100 by default
         }
-        request = {
+        request: dict = {
             'm': 0,  # message type, 0 request, 1 reply, 2 subscribe, 3 event, unsubscribe, 5 error
             'i': requestId,  # sequence number identifies an individual request or request-and-response pair, to your application
             'n': name,  # function name is the name of the function being called or that the server is responding to, the server echoes your call
@@ -161,7 +161,7 @@ class ndax(ccxt.async_support.ndax):
         #     ]
         #
         name = 'SubscribeTrades'
-        updates = {}
+        updates: dict = {}
         for i in range(0, len(payload)):
             trade = self.parse_trade(payload[i])
             symbol = trade['symbol']
@@ -198,13 +198,13 @@ class ndax(ccxt.async_support.ndax):
         messageHash = name + ':' + timeframe + ':' + market['id']
         url = self.urls['api']['ws']
         requestId = self.request_id()
-        payload = {
+        payload: dict = {
             'OMSId': omsId,
             'InstrumentId': int(market['id']),  # conditionally optional
             'Interval': int(self.safe_string(self.timeframes, timeframe, timeframe)),
             'IncludeLastCount': 100,  # the number of previous candles to retrieve in the immediate snapshot, 100 by default
         }
-        request = {
+        request: dict = {
             'm': 0,  # message type, 0 request, 1 reply, 2 subscribe, 3 event, unsubscribe, 5 error
             'i': requestId,  # sequence number identifies an individual request or request-and-response pair, to your application
             'n': name,  # function name is the name of the function being called or that the server is responding to, the server echoes your call
@@ -242,7 +242,7 @@ class ndax(ccxt.async_support.ndax):
         #         ]
         #     ]
         #
-        updates = {}
+        updates: dict = {}
         for i in range(0, len(payload)):
             ohlcv = payload[i]
             marketId = self.safe_string(ohlcv, 8)
@@ -317,19 +317,19 @@ class ndax(ccxt.async_support.ndax):
         url = self.urls['api']['ws']
         requestId = self.request_id()
         limit = 100 if (limit is None) else limit
-        payload = {
+        payload: dict = {
             'OMSId': omsId,
             'InstrumentId': int(market['id']),  # conditionally optional
             # 'Symbol': market['info']['symbol'],  # conditionally optional
             'Depth': limit,  # default 100
         }
-        request = {
+        request: dict = {
             'm': 0,  # message type, 0 request, 1 reply, 2 subscribe, 3 event, unsubscribe, 5 error
             'i': requestId,  # sequence number identifies an individual request or request-and-response pair, to your application
             'n': name,  # function name is the name of the function being called or that the server is responding to, the server echoes your call
             'o': self.json(payload),  # JSON-formatted string containing the data being sent with the message
         }
-        subscription = {
+        subscription: dict = {
             'id': requestId,
             'messageHash': messageHash,
             'name': name,
@@ -370,12 +370,12 @@ class ndax(ccxt.async_support.ndax):
         firstBidAsk = self.safe_value(payload, 0, [])
         marketId = self.safe_string(firstBidAsk, 7)
         if marketId is None:
-            return message
+            return
         market = self.safe_market(marketId)
         symbol = market['symbol']
         orderbook = self.safe_value(self.orderbooks, symbol)
         if orderbook is None:
-            return message
+            return
         timestamp = None
         nonce = None
         for i in range(0, len(payload)):
@@ -460,10 +460,8 @@ class ndax(ccxt.async_support.ndax):
         subscription = self.safe_value(subscriptionsById, id)
         if subscription is not None:
             method = self.safe_value(subscription, 'method')
-            if method is None:
-                return message
-            else:
-                return method(client, message, subscription)
+            if method is not None:
+                method(client, message, subscription)
 
     def handle_message(self, client: Client, message):
         #
@@ -490,9 +488,9 @@ class ndax(ccxt.async_support.ndax):
         #
         payload = self.safe_string(message, 'o')
         if payload is None:
-            return message
+            return
         message['o'] = json.loads(payload)
-        methods = {
+        methods: dict = {
             'SubscribeLevel2': self.handle_subscription_status,
             'SubscribeLevel1': self.handle_ticker,
             'Level2UpdateEvent': self.handle_order_book,
@@ -504,7 +502,5 @@ class ndax(ccxt.async_support.ndax):
         }
         event = self.safe_string(message, 'n')
         method = self.safe_value(methods, event)
-        if method is None:
-            return message
-        else:
-            return method(client, message)
+        if method is not None:
+            method(client, message)

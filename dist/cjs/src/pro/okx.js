@@ -19,10 +19,17 @@ class okx extends okx$1 {
                 'watchTradesForSymbols': true,
                 'watchOrderBookForSymbols': true,
                 'watchBalance': true,
+                'watchLiquidations': 'emulated',
+                'watchLiquidationsForSymbols': true,
+                'watchMyLiquidations': 'emulated',
+                'watchMyLiquidationsForSymbols': true,
                 'watchOHLCV': true,
+                'watchOHLCVForSymbols': true,
                 'watchOrders': true,
                 'watchMyTrades': true,
                 'watchPositions': true,
+                'watchFundingRate': true,
+                'watchFundingRates': true,
                 'createOrderWs': true,
                 'editOrderWs': true,
                 'cancelOrderWs': true,
@@ -244,6 +251,88 @@ class okx extends okx$1 {
             client.resolve(stored, messageHash);
         }
     }
+    async watchFundingRate(symbol, params = {}) {
+        /**
+         * @method
+         * @name okx#watchFundingRate
+         * @description watch the current funding rate
+         * @see https://www.okx.com/docs-v5/en/#public-data-websocket-funding-rate-channel
+         * @param {string} symbol unified market symbol
+         * @param {object} [params] extra parameters specific to the exchange API endpoint
+         * @returns {object} a [funding rate structure]{@link https://docs.ccxt.com/#/?id=funding-rate-structure}
+         */
+        symbol = this.symbol(symbol);
+        const fr = await this.watchFundingRates([symbol], params);
+        return fr[symbol];
+    }
+    async watchFundingRates(symbols, params = {}) {
+        /**
+         * @method
+         * @name coinbaseinternational#watchFundingRates
+         * @description watch the funding rate for multiple markets
+         * @see https://www.okx.com/docs-v5/en/#public-data-websocket-funding-rate-channel
+         * @param {string[]} symbols list of unified market symbols
+         * @param {object} [params] extra parameters specific to the exchange API endpoint
+         * @returns {object} a dictionary of [funding rates structures]{@link https://docs.ccxt.com/#/?id=funding-rates-structure}, indexe by market symbols
+         */
+        await this.loadMarkets();
+        symbols = this.marketSymbols(symbols);
+        const channel = 'funding-rate';
+        const topics = [];
+        const messageHashes = [];
+        for (let i = 0; i < symbols.length; i++) {
+            const symbol = symbols[i];
+            messageHashes.push(channel + ':' + symbol);
+            const marketId = this.marketId(symbol);
+            const topic = {
+                'channel': channel,
+                'instId': marketId,
+            };
+            topics.push(topic);
+        }
+        const request = {
+            'op': 'subscribe',
+            'args': topics,
+        };
+        const url = this.getUrl(channel, 'public');
+        const fundingRate = await this.watchMultiple(url, messageHashes, request, messageHashes);
+        if (this.newUpdates) {
+            const symbol = this.safeString(fundingRate, 'symbol');
+            const result = {};
+            result[symbol] = fundingRate;
+            return result;
+        }
+        return this.filterByArray(this.fundingRates, 'symbol', symbols);
+    }
+    handleFundingRate(client, message) {
+        //
+        // "data":[
+        //     {
+        //        "fundingRate":"0.0001875391284828",
+        //        "fundingTime":"1700726400000",
+        //        "instId":"BTC-USD-SWAP",
+        //        "instType":"SWAP",
+        //        "method": "next_period",
+        //        "maxFundingRate":"0.00375",
+        //        "minFundingRate":"-0.00375",
+        //        "nextFundingRate":"0.0002608059239328",
+        //        "nextFundingTime":"1700755200000",
+        //        "premium": "0.0001233824646391",
+        //        "settFundingRate":"0.0001699799259033",
+        //        "settState":"settled",
+        //        "ts":"1700724675402"
+        //     }
+        // ]
+        //
+        const data = this.safeList(message, 'data', []);
+        for (let i = 0; i < data.length; i++) {
+            const rawfr = data[i];
+            const fundingRate = this.parseFundingRate(rawfr);
+            const symbol = fundingRate['symbol'];
+            this.fundingRates[symbol] = fundingRate;
+            client.resolve(fundingRate, 'funding-rate' + ':' + fundingRate['symbol']);
+        }
+    }
     async watchTicker(symbol, params = {}) {
         /**
          * @method
@@ -334,6 +423,255 @@ class okx extends okx$1 {
         }
         return message;
     }
+    async watchLiquidationsForSymbols(symbols = undefined, since = undefined, limit = undefined, params = {}) {
+        /**
+         * @method
+         * @name okx#watchLiquidationsForSymbols
+         * @description watch the public liquidations of a trading pair
+         * @see https://www.okx.com/docs-v5/en/#public-data-websocket-liquidation-orders-channel
+         * @param {string} symbol unified CCXT market symbol
+         * @param {int} [since] the earliest time in ms to fetch liquidations for
+         * @param {int} [limit] the maximum number of liquidation structures to retrieve
+         * @param {object} [params] exchange specific parameters for the okx api endpoint
+         * @returns {object} an array of [liquidation structures]{@link https://github.com/ccxt/ccxt/wiki/Manual#liquidation-structure}
+         */
+        await this.loadMarkets();
+        symbols = this.marketSymbols(symbols, undefined, true, true);
+        let messageHash = 'liquidations';
+        if (symbols !== undefined) {
+            messageHash += '::' + symbols.join(',');
+        }
+        const market = this.getMarketFromSymbols(symbols);
+        let type = undefined;
+        [type, params] = this.handleMarketTypeAndParams('watchliquidationsForSymbols', market, params);
+        const channel = 'liquidation-orders';
+        if (type === 'spot') {
+            type = 'SWAP';
+        }
+        else if (type === 'future') {
+            type = 'futures';
+        }
+        const uppercaseType = type.toUpperCase();
+        const request = {
+            'instType': uppercaseType,
+        };
+        const newLiquidations = await this.subscribe('public', messageHash, channel, undefined, this.extend(request, params));
+        if (this.newUpdates) {
+            return newLiquidations;
+        }
+        return this.filterBySymbolsSinceLimit(this.liquidations, symbols, since, limit, true);
+    }
+    handleLiquidation(client, message) {
+        //
+        //    {
+        //        "arg": {
+        //            "channel": "liquidation-orders",
+        //            "instType": "SWAP"
+        //        },
+        //        "data": [
+        //            {
+        //                "details": [
+        //                    {
+        //                        "bkLoss": "0",
+        //                        "bkPx": "0.007831",
+        //                        "ccy": "",
+        //                        "posSide": "short",
+        //                        "side": "buy",
+        //                        "sz": "13",
+        //                        "ts": "1692266434010"
+        //                    }
+        //                ],
+        //                "instFamily": "IOST-USDT",
+        //                "instId": "IOST-USDT-SWAP",
+        //                "instType": "SWAP",
+        //                "uly": "IOST-USDT"
+        //            }
+        //        ]
+        //    }
+        //
+        const rawLiquidations = this.safeList(message, 'data', []);
+        for (let i = 0; i < rawLiquidations.length; i++) {
+            const rawLiquidation = rawLiquidations[i];
+            const liquidation = this.parseWsLiquidation(rawLiquidation);
+            const symbol = this.safeString(liquidation, 'symbol');
+            let liquidations = this.safeValue(this.liquidations, symbol);
+            if (liquidations === undefined) {
+                const limit = this.safeInteger(this.options, 'liquidationsLimit', 1000);
+                liquidations = new Cache.ArrayCache(limit);
+            }
+            liquidations.append(liquidation);
+            this.liquidations[symbol] = liquidations;
+            client.resolve([liquidation], 'liquidations');
+            client.resolve([liquidation], 'liquidations::' + symbol);
+        }
+    }
+    async watchMyLiquidationsForSymbols(symbols = undefined, since = undefined, limit = undefined, params = {}) {
+        /**
+         * @method
+         * @name okx#watchMyLiquidationsForSymbols
+         * @description watch the private liquidations of a trading pair
+         * @see https://www.okx.com/docs-v5/en/#trading-account-websocket-balance-and-position-channel
+         * @param {string} symbol unified CCXT market symbol
+         * @param {int} [since] the earliest time in ms to fetch liquidations for
+         * @param {int} [limit] the maximum number of liquidation structures to retrieve
+         * @param {object} [params] exchange specific parameters for the okx api endpoint
+         * @returns {object} an array of [liquidation structures]{@link https://github.com/ccxt/ccxt/wiki/Manual#liquidation-structure}
+         */
+        await this.loadMarkets();
+        const isStop = this.safeValue2(params, 'stop', 'trigger', false);
+        params = this.omit(params, ['stop', 'trigger']);
+        await this.authenticate({ 'access': isStop ? 'business' : 'private' });
+        symbols = this.marketSymbols(symbols, undefined, true, true);
+        let messageHash = 'myLiquidations';
+        if (symbols !== undefined) {
+            messageHash += '::' + symbols.join(',');
+        }
+        const channel = 'balance_and_position';
+        const newLiquidations = await this.subscribe('private', messageHash, channel, undefined, params);
+        if (this.newUpdates) {
+            return newLiquidations;
+        }
+        return this.filterBySymbolsSinceLimit(this.liquidations, symbols, since, limit, true);
+    }
+    handleMyLiquidation(client, message) {
+        //
+        //    {
+        //        "arg": {
+        //            "channel": "balance_and_position",
+        //            "uid": "77982378738415879"
+        //        },
+        //        "data": [{
+        //            "pTime": "1597026383085",
+        //            "eventType": "snapshot",
+        //            "balData": [{
+        //                "ccy": "BTC",
+        //                "cashBal": "1",
+        //                "uTime": "1597026383085"
+        //            }],
+        //            "posData": [{
+        //                "posId": "1111111111",
+        //                "tradeId": "2",
+        //                "instId": "BTC-USD-191018",
+        //                "instType": "FUTURES",
+        //                "mgnMode": "cross",
+        //                "posSide": "long",
+        //                "pos": "10",
+        //                "ccy": "BTC",
+        //                "posCcy": "",
+        //                "avgPx": "3320",
+        //                "uTIme": "1597026383085"
+        //            }],
+        //            "trades": [{
+        //                "instId": "BTC-USD-191018",
+        //                "tradeId": "2",
+        //            }]
+        //        }]
+        //    }
+        //
+        const rawLiquidations = this.safeList(message, 'data', []);
+        for (let i = 0; i < rawLiquidations.length; i++) {
+            const rawLiquidation = rawLiquidations[i];
+            const eventType = this.safeString(rawLiquidation, 'eventType');
+            if (eventType !== 'liquidation') {
+                return;
+            }
+            const liquidation = this.parseWsMyLiquidation(rawLiquidation);
+            const symbol = this.safeString(liquidation, 'symbol');
+            let liquidations = this.safeValue(this.liquidations, symbol);
+            if (liquidations === undefined) {
+                const limit = this.safeInteger(this.options, 'myLiquidationsLimit', 1000);
+                liquidations = new Cache.ArrayCache(limit);
+            }
+            liquidations.append(liquidation);
+            this.liquidations[symbol] = liquidations;
+            client.resolve([liquidation], 'myLiquidations');
+            client.resolve([liquidation], 'myLiquidations::' + symbol);
+        }
+    }
+    parseWsMyLiquidation(liquidation, market = undefined) {
+        //
+        //    {
+        //        "pTime": "1597026383085",
+        //        "eventType": "snapshot",
+        //        "balData": [{
+        //            "ccy": "BTC",
+        //            "cashBal": "1",
+        //            "uTime": "1597026383085"
+        //        }],
+        //        "posData": [{
+        //            "posId": "1111111111",
+        //            "tradeId": "2",
+        //            "instId": "BTC-USD-191018",
+        //            "instType": "FUTURES",
+        //            "mgnMode": "cross",
+        //            "posSide": "long",
+        //            "pos": "10",
+        //            "ccy": "BTC",
+        //            "posCcy": "",
+        //            "avgPx": "3320",
+        //            "uTIme": "1597026383085"
+        //        }],
+        //        "trades": [{
+        //            "instId": "BTC-USD-191018",
+        //            "tradeId": "2",
+        //        }]
+        //    }
+        //
+        const posData = this.safeList(liquidation, 'posData', []);
+        const firstPosData = this.safeDict(posData, 0, {});
+        const marketId = this.safeString(firstPosData, 'instId');
+        market = this.safeMarket(marketId, market);
+        const timestamp = this.safeInteger(firstPosData, 'uTIme');
+        return this.safeLiquidation({
+            'info': liquidation,
+            'symbol': this.safeSymbol(marketId, market),
+            'contracts': this.safeNumber(firstPosData, 'pos'),
+            'contractSize': this.safeNumber(market, 'contractSize'),
+            'price': this.safeNumber(liquidation, 'avgPx'),
+            'baseValue': undefined,
+            'quoteValue': undefined,
+            'timestamp': timestamp,
+            'datetime': this.iso8601(timestamp),
+        });
+    }
+    parseWsLiquidation(liquidation, market = undefined) {
+        //
+        // public liquidation
+        //    {
+        //        "details": [
+        //            {
+        //                "bkLoss": "0",
+        //                "bkPx": "0.007831",
+        //                "ccy": "",
+        //                "posSide": "short",
+        //                "side": "buy",
+        //                "sz": "13",
+        //                "ts": "1692266434010"
+        //            }
+        //        ],
+        //        "instFamily": "IOST-USDT",
+        //        "instId": "IOST-USDT-SWAP",
+        //        "instType": "SWAP",
+        //        "uly": "IOST-USDT"
+        //    }
+        //
+        const details = this.safeList(liquidation, 'details', []);
+        const liquidationDetails = this.safeDict(details, 0, {});
+        const marketId = this.safeString(liquidation, 'instId');
+        market = this.safeMarket(marketId, market);
+        const timestamp = this.safeInteger(liquidationDetails, 'ts');
+        return this.safeLiquidation({
+            'info': liquidation,
+            'symbol': this.safeSymbol(marketId, market),
+            'contracts': this.safeNumber(liquidationDetails, 'sz'),
+            'contractSize': this.safeNumber(market, 'contractSize'),
+            'price': this.safeNumber(liquidationDetails, 'bkPx'),
+            'baseValue': undefined,
+            'quoteValue': undefined,
+            'timestamp': timestamp,
+            'datetime': this.iso8601(timestamp),
+        });
+    }
     async watchOHLCV(symbol, timeframe = '1m', since = undefined, limit = undefined, params = {}) {
         /**
          * @method
@@ -355,6 +693,50 @@ class okx extends okx$1 {
             limit = ohlcv.getLimit(symbol, limit);
         }
         return this.filterBySinceLimit(ohlcv, since, limit, 0, true);
+    }
+    async watchOHLCVForSymbols(symbolsAndTimeframes, since = undefined, limit = undefined, params = {}) {
+        /**
+         * @method
+         * @name okx#watchOHLCVForSymbols
+         * @description watches historical candlestick data containing the open, high, low, and close price, and the volume of a market
+         * @param {string[][]} symbolsAndTimeframes array of arrays containing unified symbols and timeframes to fetch OHLCV data for, example [['BTC/USDT', '1m'], ['LTC/USDT', '5m']]
+         * @param {int} [since] timestamp in ms of the earliest candle to fetch
+         * @param {int} [limit] the maximum amount of candles to fetch
+         * @param {object} [params] extra parameters specific to the exchange API endpoint
+         * @returns {int[][]} A list of candles ordered as timestamp, open, high, low, close, volume
+         */
+        const symbolsLength = symbolsAndTimeframes.length;
+        if (symbolsLength === 0 || !Array.isArray(symbolsAndTimeframes[0])) {
+            throw new errors.ArgumentsRequired(this.id + " watchOHLCVForSymbols() requires a an array of symbols and timeframes, like  [['BTC/USDT', '1m'], ['LTC/USDT', '5m']]");
+        }
+        await this.loadMarkets();
+        const topics = [];
+        const messageHashes = [];
+        for (let i = 0; i < symbolsAndTimeframes.length; i++) {
+            const symbolAndTimeframe = symbolsAndTimeframes[i];
+            const sym = symbolAndTimeframe[0];
+            const tf = symbolAndTimeframe[1];
+            const marketId = this.marketId(sym);
+            const interval = this.safeString(this.timeframes, tf, tf);
+            const channel = 'candle' + interval;
+            const topic = {
+                'channel': channel,
+                'instId': marketId,
+            };
+            topics.push(topic);
+            messageHashes.push('multi:' + channel + ':' + sym);
+        }
+        const request = {
+            'op': 'subscribe',
+            'args': topics,
+        };
+        const url = this.getUrl('candle', 'public');
+        const [symbol, timeframe, candles] = await this.watchMultiple(url, messageHashes, request, messageHashes);
+        if (this.newUpdates) {
+            limit = candles.getLimit(symbol, limit);
+        }
+        const filtered = this.filterBySinceLimit(candles, since, limit, 0, true);
+        return this.createOHLCVObject(symbol, timeframe, filtered);
     }
     handleOHLCV(client, message) {
         //
@@ -378,7 +760,7 @@ class okx extends okx$1 {
         const data = this.safeValue(message, 'data', []);
         const marketId = this.safeString(arg, 'instId');
         const market = this.safeMarket(marketId);
-        const symbol = market['id'];
+        const symbol = market['symbol'];
         const interval = channel.replace('candle', '');
         // use a reverse lookup in a static map instead
         const timeframe = this.findTimeframe(interval);
@@ -392,18 +774,25 @@ class okx extends okx$1 {
                 this.ohlcvs[symbol][timeframe] = stored;
             }
             stored.append(parsed);
-            const messageHash = channel + ':' + marketId;
+            const messageHash = channel + ':' + market['id'];
             client.resolve(stored, messageHash);
+            // for multiOHLCV we need special object, as opposed to other "multi"
+            // methods, because OHLCV response item does not contain symbol
+            // or timeframe, thus otherwise it would be unrecognizable
+            const messageHashForMulti = 'multi:' + channel + ':' + symbol;
+            client.resolve([symbol, timeframe, stored], messageHashForMulti);
         }
     }
     async watchOrderBook(symbol, limit = undefined, params = {}) {
         /**
          * @method
          * @name okx#watchOrderBook
+         * @see https://www.okx.com/docs-v5/en/#order-book-trading-market-data-ws-order-book-channel
          * @description watches information on open orders with bid (buy) and ask (sell) prices, volumes and other data
          * @param {string} symbol unified symbol of the market to fetch the order book for
          * @param {int} [limit] the maximum amount of order book entries to return
          * @param {object} [params] extra parameters specific to the exchange API endpoint
+         * @param {string} [params.depth] okx order book depth, can be books, books5, books-l2-tbt, books50-l2-tbt, bbo-tbt
          * @returns {object} A dictionary of [order book structures]{@link https://docs.ccxt.com/#/?id=order-book-structure} indexed by market symbols
          */
         //
@@ -435,17 +824,36 @@ class okx extends okx$1 {
         /**
          * @method
          * @name okx#watchOrderBookForSymbols
+         * @see https://www.okx.com/docs-v5/en/#order-book-trading-market-data-ws-order-book-channel
          * @description watches information on open orders with bid (buy) and ask (sell) prices, volumes and other data
          * @param {string[]} symbols unified array of symbols
-         * @param {int} [limit] the maximum amount of order book entries to return
+         * @param {int} [limit] 1,5, 400, 50 (l2-tbt, vip4+) or 40000 (vip5+) the maximum amount of order book entries to return
          * @param {object} [params] extra parameters specific to the exchange API endpoint
+         * @param {string} [params.depth] okx order book depth, can be books, books5, books-l2-tbt, books50-l2-tbt, bbo-tbt
          * @returns {object} A dictionary of [order book structures]{@link https://docs.ccxt.com/#/?id=order-book-structure} indexed by market symbols
          */
         await this.loadMarkets();
         symbols = this.marketSymbols(symbols);
-        const options = this.safeValue(this.options, 'watchOrderBook', {});
-        const depth = this.safeString(options, 'depth', 'books');
+        let depth = undefined;
+        [depth, params] = this.handleOptionAndParams(params, 'watchOrderBook', 'depth', 'books');
+        if (limit !== undefined) {
+            if (limit === 1) {
+                depth = 'bbo-tbt';
+            }
+            else if (limit > 1 && limit <= 5) {
+                depth = 'books5';
+            }
+            else if (limit === 50) {
+                depth = 'books50-l2-tbt'; // Make sure you have VIP4 and above
+            }
+            else if (limit === 400) {
+                depth = 'books';
+            }
+        }
         if ((depth === 'books-l2-tbt') || (depth === 'books50-l2-tbt')) {
+            if (!this.checkRequiredCredentials(false)) {
+                throw new errors.AuthenticationError(this.id + ' watchOrderBook/watchOrderBookForSymbols requires authentication for this depth. Add credentials or change the depth option to books or books5');
+            }
             await this.authenticate({ 'access': 'public' });
         }
         const topics = [];
@@ -509,7 +917,9 @@ class okx extends okx$1 {
         const storedBids = orderbook['bids'];
         this.handleDeltas(storedAsks, asks);
         this.handleDeltas(storedBids, bids);
-        const checksum = this.safeValue(this.options, 'checksum', true);
+        const marketId = this.safeString(message, 'instId');
+        const symbol = this.safeSymbol(marketId);
+        const checksum = this.safeBool(this.options, 'checksum', true);
         if (checksum) {
             const asksLength = storedAsks.length;
             const bidsLength = storedBids.length;
@@ -529,6 +939,8 @@ class okx extends okx$1 {
             const localChecksum = this.crc32(payload, true);
             if (responseChecksum !== localChecksum) {
                 const error = new errors.InvalidNonce(this.id + ' invalid checksum');
+                delete client.subscriptions[messageHash];
+                delete this.orderbooks[symbol];
                 client.reject(error, messageHash);
             }
         }
@@ -623,10 +1035,10 @@ class okx extends okx$1 {
         //         ]
         //     }
         //
-        const arg = this.safeValue(message, 'arg', {});
+        const arg = this.safeDict(message, 'arg', {});
         const channel = this.safeString(arg, 'channel');
         const action = this.safeString(message, 'action');
-        const data = this.safeValue(message, 'data', []);
+        const data = this.safeList(message, 'data', []);
         const marketId = this.safeString(arg, 'instId');
         const market = this.safeMarket(marketId);
         const symbol = market['symbol'];
@@ -705,7 +1117,7 @@ class okx extends okx$1 {
             const message = this.extend(request, params);
             this.watch(url, messageHash, message, messageHash);
         }
-        return future;
+        return await future;
     }
     async watchBalance(params = {}) {
         /**
@@ -718,6 +1130,9 @@ class okx extends okx$1 {
         await this.loadMarkets();
         await this.authenticate();
         return await this.subscribe('private', 'account', 'account', undefined, params);
+    }
+    handleBalanceAndPosition(client, message) {
+        this.handleMyLiquidation(client, message);
     }
     handleBalance(client, message) {
         //
@@ -800,19 +1215,21 @@ class okx extends okx$1 {
         /**
          * @method
          * @name okx#watchMyTrades
-         * @see https://www.okx.com/docs-v5/en/#order-book-trading-trade-ws-order-channel
          * @description watches information on multiple trades made by the user
+         * @see https://www.okx.com/docs-v5/en/#order-book-trading-trade-ws-order-channel
          * @param {string} [symbol] unified market symbol of the market trades were made in
          * @param {int} [since] the earliest time in ms to fetch trades for
          * @param {int} [limit] the maximum number of trade structures to retrieve
          * @param {object} [params] extra parameters specific to the exchange API endpoint
          * @param {bool} [params.stop] true if fetching trigger or conditional trades
+         * @param {string} [params.type] 'spot', 'swap', 'future', 'option', 'ANY', 'SPOT', 'MARGIN', 'SWAP', 'FUTURES' or 'OPTION'
+         * @param {string} [params.marginMode] 'cross' or 'isolated', for automatically setting the type to spot margin
          * @returns {object[]} a list of [trade structures]{@link https://docs.ccxt.com/#/?id=trade-structure
          */
         // By default, receive order updates from any instrument type
         let type = undefined;
         [type, params] = this.handleOptionAndParams(params, 'watchMyTrades', 'type', 'ANY');
-        const isStop = this.safeValue(params, 'stop', false);
+        const isStop = this.safeBool(params, 'stop', false);
         params = this.omit(params, ['stop']);
         await this.loadMarkets();
         await this.authenticate({ 'access': isStop ? 'business' : 'private' });
@@ -828,7 +1245,14 @@ class okx extends okx$1 {
         if (type === 'future') {
             type = 'futures';
         }
-        const uppercaseType = type.toUpperCase();
+        let uppercaseType = type.toUpperCase();
+        let marginMode = undefined;
+        [marginMode, params] = this.handleMarginModeAndParams('watchMyTrades', params);
+        if (uppercaseType === 'SPOT') {
+            if (marginMode !== undefined) {
+                uppercaseType = 'MARGIN';
+            }
+        }
         const request = {
             'instType': uppercaseType,
         };
@@ -848,9 +1272,6 @@ class okx extends okx$1 {
          * @param {object} params extra parameters specific to the exchange API endpoint
          * @returns {object[]} a list of [position structure]{@link https://docs.ccxt.com/en/latest/manual.html#position-structure}
          */
-        if (this.isEmpty(symbols)) {
-            throw new errors.ArgumentsRequired(this.id + ' watchPositions requires a list of symbols');
-        }
         await this.loadMarkets();
         await this.authenticate(params);
         symbols = this.marketSymbols(symbols);
@@ -858,7 +1279,23 @@ class okx extends okx$1 {
             'instType': 'ANY',
         };
         const channel = 'positions';
-        const newPositions = await this.subscribeMultiple('private', channel, symbols, this.extend(request, params));
+        let newPositions = undefined;
+        if (symbols === undefined) {
+            const arg = {
+                'channel': 'positions',
+                'instType': 'ANY',
+            };
+            const args = [arg];
+            const nonSymbolRequest = {
+                'op': 'subscribe',
+                'args': args,
+            };
+            const url = this.getUrl(channel, 'private');
+            newPositions = await this.watch(url, channel, nonSymbolRequest, channel);
+        }
+        else {
+            newPositions = await this.subscribeMultiple('private', channel, symbols, this.extend(request, params));
+        }
         if (this.newUpdates) {
             return newPositions;
         }
@@ -956,18 +1393,21 @@ class okx extends okx$1 {
                 client.resolve(positions, messageHash);
             }
         }
+        client.resolve(newPositions, channel);
     }
     async watchOrders(symbol = undefined, since = undefined, limit = undefined, params = {}) {
         /**
          * @method
          * @name okx#watchOrders
-         * @see https://www.okx.com/docs-v5/en/#order-book-trading-trade-ws-order-channel
          * @description watches information on multiple orders made by the user
-         * @param {string} [symbol] unified market symbol of the market orders were made in
+         * @see https://www.okx.com/docs-v5/en/#order-book-trading-trade-ws-order-channel
+         * @param {string} [symbol] unified market symbol of the market the orders were made in
          * @param {int} [since] the earliest time in ms to fetch orders for
          * @param {int} [limit] the maximum number of order structures to retrieve
          * @param {object} [params] extra parameters specific to the exchange API endpoint
          * @param {bool} [params.stop] true if fetching trigger or conditional orders
+         * @param {string} [params.type] 'spot', 'swap', 'future', 'option', 'ANY', 'SPOT', 'MARGIN', 'SWAP', 'FUTURES' or 'OPTION'
+         * @param {string} [params.marginMode] 'cross' or 'isolated', for automatically setting the type to spot margin
          * @returns {object[]} a list of [order structures]{@link https://docs.ccxt.com/#/?id=order-structure}
          */
         let type = undefined;
@@ -986,7 +1426,14 @@ class okx extends okx$1 {
         if (type === 'future') {
             type = 'futures';
         }
-        const uppercaseType = type.toUpperCase();
+        let uppercaseType = type.toUpperCase();
+        let marginMode = undefined;
+        [marginMode, params] = this.handleMarginModeAndParams('watchOrders', params);
+        if (uppercaseType === 'SPOT') {
+            if (marginMode !== undefined) {
+                uppercaseType = 'MARGIN';
+            }
+        }
         const request = {
             'instType': uppercaseType,
         };
@@ -1239,9 +1686,10 @@ class okx extends okx$1 {
             this.handleErrors(undefined, undefined, client.url, method, undefined, stringMsg, stringMsg, undefined, undefined);
         }
         const orders = this.parseOrders(args, undefined, undefined, undefined);
-        client.resolve(orders, messageHash);
+        const first = this.safeDict(orders, 0, {});
+        client.resolve(first, messageHash);
     }
-    async editOrderWs(id, symbol, type, side, amount, price = undefined, params = {}) {
+    async editOrderWs(id, symbol, type, side, amount = undefined, price = undefined, params = {}) {
         /**
          * @method
          * @name okx#editOrderWs
@@ -1423,29 +1871,21 @@ class okx extends okx$1 {
         //     { event: 'error', msg: "Illegal request: {"op":"subscribe","args":["spot/ticker:BTC-USDT"]}", code: "60012" }
         //     { event: 'error", msg: "channel:ticker,instId:BTC-USDT doesn"t exist", code: "60018" }
         //
-        const errorCode = this.safeInteger(message, 'code');
+        const errorCode = this.safeString(message, 'code');
         try {
-            if (errorCode) {
+            if (errorCode && errorCode !== '0') {
                 const feedback = this.id + ' ' + this.json(message);
                 this.throwExactlyMatchedException(this.exceptions['exact'], errorCode, feedback);
                 const messageString = this.safeValue(message, 'msg');
                 if (messageString !== undefined) {
                     this.throwBroadlyMatchedException(this.exceptions['broad'], messageString, feedback);
                 }
+                throw new errors.ExchangeError(feedback);
             }
         }
         catch (e) {
-            if (e instanceof errors.AuthenticationError) {
-                const messageHash = 'authenticated';
-                client.reject(e, messageHash);
-                if (messageHash in client.subscriptions) {
-                    delete client.subscriptions[messageHash];
-                }
-                return false;
-            }
-            else {
-                client.reject(e);
-            }
+            client.reject(e);
+            return false;
         }
         return message;
     }
@@ -1493,7 +1933,8 @@ class okx extends okx$1 {
         //
         //
         if (message === 'pong') {
-            return this.handlePong(client, message);
+            this.handlePong(client, message);
+            return;
         }
         // const table = this.safeString (message, 'table');
         // if (table === undefined) {
@@ -1512,11 +1953,8 @@ class okx extends okx$1 {
                 'mass-cancel': this.handleCancelAllOrders,
             };
             const method = this.safeValue(methods, event);
-            if (method === undefined) {
-                return message;
-            }
-            else {
-                return method.call(this, client, message);
+            if (method !== undefined) {
+                method.call(this, client, message);
             }
         }
         else {
@@ -1535,21 +1973,21 @@ class okx extends okx$1 {
                 'block-tickers': this.handleTicker,
                 'trades': this.handleTrades,
                 'account': this.handleBalance,
+                'funding-rate': this.handleFundingRate,
                 // 'margin_account': this.handleBalance,
                 'orders': this.handleOrders,
                 'orders-algo': this.handleOrders,
+                'liquidation-orders': this.handleLiquidation,
+                'balance_and_position': this.handleBalanceAndPosition,
             };
             const method = this.safeValue(methods, channel);
             if (method === undefined) {
                 if (channel.indexOf('candle') === 0) {
                     this.handleOHLCV(client, message);
                 }
-                else {
-                    return message;
-                }
             }
             else {
-                return method.call(this, client, message);
+                method.call(this, client, message);
             }
         }
     }

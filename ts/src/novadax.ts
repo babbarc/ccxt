@@ -7,7 +7,7 @@ import { Precise } from './base/Precise.js';
 import { TICK_SIZE } from './base/functions/number.js';
 import { sha256 } from './static_dependencies/noble-hashes/sha256.js';
 import { md5 } from './static_dependencies/noble-hashes/md5.js';
-import type { Balances, Currency, Int, Market, OHLCV, Order, OrderBook, OrderSide, OrderType, Str, Strings, Ticker, Tickers, Trade, Transaction } from './base/types.js';
+import type { TransferEntry, Balances, Currency, Int, Market, OHLCV, Order, OrderBook, OrderSide, OrderType, Str, Strings, Ticker, Tickers, Trade, Transaction, Num, Account, Dict, int } from './base/types.js';
 
 //  ---------------------------------------------------------------------------
 
@@ -21,9 +21,9 @@ export default class novadax extends Exchange {
             'id': 'novadax',
             'name': 'NovaDAX',
             'countries': [ 'BR' ], // Brazil
-            // 60 requests per second = 1000ms / 60 = 16.6667ms between requests (public endpoints, limited by IP address)
-            // 20 requests per second => cost = 60 / 20 = 3 (private endpoints, limited by API Key)
-            'rateLimit': 16.6667,
+            // 6000 weight per min => 100 weight per second => min weight = 1
+            // 100 requests per second => ( 1000ms / 100 ) = 10 ms between requests on average
+            'rateLimit': 10,
             'version': 'v1',
             // new metainfo interface
             'has': {
@@ -77,7 +77,11 @@ export default class novadax extends Exchange {
                 'fetchOrders': true,
                 'fetchOrderTrades': true,
                 'fetchPosition': false,
+                'fetchPositionHistory': false,
+                'fetchPositionMode': false,
                 'fetchPositions': false,
+                'fetchPositionsForSymbol': false,
+                'fetchPositionsHistory': false,
                 'fetchPositionsRisk': false,
                 'fetchPremiumIndexOHLCV': false,
                 'fetchTicker': true,
@@ -121,33 +125,37 @@ export default class novadax extends Exchange {
             'api': {
                 'public': {
                     'get': {
-                        'common/symbol': 1.2,
-                        'common/symbols': 1.2,
-                        'common/timestamp': 1.2,
-                        'market/tickers': 1.2,
-                        'market/ticker': 1.2,
-                        'market/depth': 1.2,
-                        'market/trades': 1.2,
-                        'market/kline/history': 1.2,
+                        'common/symbol': 1,
+                        'common/symbols': 1,
+                        'common/timestamp': 1,
+                        'market/tickers': 5,
+                        'market/ticker': 1,
+                        'market/depth': 1,
+                        'market/trades': 5,
+                        'market/kline/history': 5,
                     },
                 },
                 'private': {
                     'get': {
-                        'orders/get': 3,
-                        'orders/list': 3,
-                        'orders/fill': 3,
-                        'orders/fills': 3,
-                        'account/getBalance': 3,
-                        'account/subs': 3,
-                        'account/subs/balance': 3,
-                        'account/subs/transfer/record': 3,
+                        'orders/get': 1,
+                        'orders/list': 10,
+                        'orders/fill': 3, // not found in doc
+                        'orders/fills': 10,
+                        'account/getBalance': 1,
+                        'account/subs': 1,
+                        'account/subs/balance': 1,
+                        'account/subs/transfer/record': 10,
                         'wallet/query/deposit-withdraw': 3,
                     },
                     'post': {
-                        'orders/create': 3,
-                        'orders/cancel': 3,
-                        'account/withdraw/coin': 3,
-                        'account/subs/transfer': 3,
+                        'orders/create': 5,
+                        'orders/batch-create': 50,
+                        'orders/cancel': 1,
+                        'orders/batch-cancel': 10,
+                        'orders/cancel-by-symbol': 10,
+                        'account/subs/transfer': 5,
+                        'wallet/withdraw/coin': 3,
+                        'account/withdraw/coin': 3, // not found in doc
                     },
                 },
             },
@@ -226,7 +234,7 @@ export default class novadax extends Exchange {
         return this.safeInteger (response, 'data');
     }
 
-    async fetchMarkets (params = {}) {
+    async fetchMarkets (params = {}): Promise<Market[]> {
         /**
          * @method
          * @name novadax#fetchMarkets
@@ -259,7 +267,7 @@ export default class novadax extends Exchange {
         return this.parseMarkets (data);
     }
 
-    parseMarket (market): Market {
+    parseMarket (market: Dict): Market {
         const baseId = this.safeString (market, 'baseCurrency');
         const quoteId = this.safeString (market, 'quoteCurrency');
         const id = this.safeString (market, 'symbol');
@@ -318,7 +326,7 @@ export default class novadax extends Exchange {
         };
     }
 
-    parseTicker (ticker, market: Market = undefined): Ticker {
+    parseTicker (ticker: Dict, market: Market = undefined): Ticker {
         //
         // fetchTicker, fetchTickers
         //
@@ -378,7 +386,7 @@ export default class novadax extends Exchange {
          */
         await this.loadMarkets ();
         const market = this.market (symbol);
-        const request = {
+        const request: Dict = {
             'symbol': market['id'],
         };
         const response = await this.publicGetMarketTicker (this.extend (request, params));
@@ -400,7 +408,7 @@ export default class novadax extends Exchange {
         //         "message":"Success"
         //     }
         //
-        const data = this.safeValue (response, 'data', {});
+        const data = this.safeDict (response, 'data', {});
         return this.parseTicker (data, market);
     }
 
@@ -438,7 +446,7 @@ export default class novadax extends Exchange {
         //     }
         //
         const data = this.safeValue (response, 'data', []);
-        const result = {};
+        const result: Dict = {};
         for (let i = 0; i < data.length; i++) {
             const ticker = this.parseTicker (data[i]);
             const symbol = ticker['symbol'];
@@ -460,7 +468,7 @@ export default class novadax extends Exchange {
          */
         await this.loadMarkets ();
         const market = this.market (symbol);
-        const request = {
+        const request: Dict = {
             'symbol': market['id'],
         };
         if (limit !== undefined) {
@@ -491,7 +499,7 @@ export default class novadax extends Exchange {
         return this.parseOrderBook (data, market['symbol'], timestamp, 'bids', 'asks');
     }
 
-    parseTrade (trade, market: Market = undefined): Trade {
+    parseTrade (trade: Dict, market: Market = undefined): Trade {
         //
         // public fetchTrades
         //
@@ -584,7 +592,7 @@ export default class novadax extends Exchange {
          */
         await this.loadMarkets ();
         const market = this.market (symbol);
-        const request = {
+        const request: Dict = {
             'symbol': market['id'],
         };
         if (limit !== undefined) {
@@ -602,7 +610,7 @@ export default class novadax extends Exchange {
         //         "message":"Success"
         //     }
         //
-        const data = this.safeValue (response, 'data', []);
+        const data = this.safeList (response, 'data', []);
         return this.parseTrades (data, market, since, limit);
     }
 
@@ -621,7 +629,7 @@ export default class novadax extends Exchange {
          */
         await this.loadMarkets ();
         const market = this.market (symbol);
-        const request = {
+        const request: Dict = {
             'symbol': market['id'],
             'unit': this.safeString (this.timeframes, timeframe, timeframe),
         };
@@ -658,7 +666,7 @@ export default class novadax extends Exchange {
         //         "message": "Success"
         //     }
         //
-        const data = this.safeValue (response, 'data', []);
+        const data = this.safeList (response, 'data', []);
         return this.parseOHLCVs (data, market, timeframe, since, limit);
     }
 
@@ -690,7 +698,7 @@ export default class novadax extends Exchange {
 
     parseBalance (response): Balances {
         const data = this.safeValue (response, 'data', []);
-        const result = {
+        const result: Dict = {
             'info': response,
             'timestamp': undefined,
             'datetime': undefined,
@@ -736,7 +744,7 @@ export default class novadax extends Exchange {
         return this.parseBalance (response);
     }
 
-    async createOrder (symbol: string, type: OrderType, side: OrderSide, amount, price = undefined, params = {}) {
+    async createOrder (symbol: string, type: OrderType, side: OrderSide, amount: number, price: Num = undefined, params = {}) {
         /**
          * @method
          * @name novadax#createOrder
@@ -755,7 +763,7 @@ export default class novadax extends Exchange {
         const market = this.market (symbol);
         let uppercaseType = type.toUpperCase ();
         const uppercaseSide = side.toUpperCase ();
-        const request = {
+        const request: Dict = {
             'symbol': market['id'],
             'side': uppercaseSide, // or SELL
             // "amount": this.amountToPrecision (symbol, amount),
@@ -834,7 +842,7 @@ export default class novadax extends Exchange {
         //         "message": "Success"
         //     }
         //
-        const data = this.safeValue (response, 'data', {});
+        const data = this.safeDict (response, 'data', {});
         return this.parseOrder (data, market);
     }
 
@@ -850,7 +858,7 @@ export default class novadax extends Exchange {
          * @returns {object} An [order structure]{@link https://docs.ccxt.com/#/?id=order-structure}
          */
         await this.loadMarkets ();
-        const request = {
+        const request: Dict = {
             'id': id,
         };
         const response = await this.privatePostOrdersCancel (this.extend (request, params));
@@ -863,7 +871,7 @@ export default class novadax extends Exchange {
         //         "message": "Success"
         //     }
         //
-        const data = this.safeValue (response, 'data', {});
+        const data = this.safeDict (response, 'data', {});
         return this.parseOrder (data);
     }
 
@@ -878,7 +886,7 @@ export default class novadax extends Exchange {
          * @returns {object} An [order structure]{@link https://docs.ccxt.com/#/?id=order-structure}
          */
         await this.loadMarkets ();
-        const request = {
+        const request: Dict = {
             'id': id,
         };
         const response = await this.privateGetOrdersGet (this.extend (request, params));
@@ -903,7 +911,7 @@ export default class novadax extends Exchange {
         //         "message": "Success"
         //     }
         //
-        const data = this.safeValue (response, 'data', {});
+        const data = this.safeDict (response, 'data', {});
         return this.parseOrder (data);
     }
 
@@ -920,7 +928,7 @@ export default class novadax extends Exchange {
          * @returns {Order[]} a list of [order structures]{@link https://docs.ccxt.com/#/?id=order-structure}
          */
         await this.loadMarkets ();
-        const request = {
+        const request: Dict = {
             // 'symbol': market['id'],
             // 'status': 'SUBMITTED,PROCESSING', // SUBMITTED, PROCESSING, PARTIAL_FILLED, CANCELING, FILLED, CANCELED, REJECTED
             // 'fromId': '...', // order id to begin with
@@ -964,7 +972,7 @@ export default class novadax extends Exchange {
         //         "message": "Success"
         //     }
         //
-        const data = this.safeValue (response, 'data', []);
+        const data = this.safeList (response, 'data', []);
         return this.parseOrders (data, market, since, limit);
     }
 
@@ -980,7 +988,7 @@ export default class novadax extends Exchange {
          * @param {object} [params] extra parameters specific to the exchange API endpoint
          * @returns {Order[]} a list of [order structures]{@link https://docs.ccxt.com/#/?id=order-structure}
          */
-        const request = {
+        const request: Dict = {
             'status': 'SUBMITTED,PROCESSING,PARTIAL_FILLED,CANCELING',
         };
         return await this.fetchOrders (symbol, since, limit, this.extend (request, params));
@@ -998,7 +1006,7 @@ export default class novadax extends Exchange {
          * @param {object} [params] extra parameters specific to the exchange API endpoint
          * @returns {Order[]} a list of [order structures]{@link https://docs.ccxt.com/#/?id=order-structure}
          */
-        const request = {
+        const request: Dict = {
             'status': 'FILLED,CANCELED,REJECTED',
         };
         return await this.fetchOrders (symbol, since, limit, this.extend (request, params));
@@ -1018,7 +1026,7 @@ export default class novadax extends Exchange {
          * @returns {object[]} a list of [trade structures]{@link https://docs.ccxt.com/#/?id=trade-structure}
          */
         await this.loadMarkets ();
-        const request = {
+        const request: Dict = {
             'id': id,
         };
         const response = await this.privateGetOrdersFill (this.extend (request, params));
@@ -1051,8 +1059,8 @@ export default class novadax extends Exchange {
         return this.parseTrades (data, market, since, limit);
     }
 
-    parseOrderStatus (status) {
-        const statuses = {
+    parseOrderStatus (status: Str) {
+        const statuses: Dict = {
             'SUBMITTED': 'open',
             'PROCESSING': 'open',
             'PARTIAL_FILLED': 'open',
@@ -1064,7 +1072,7 @@ export default class novadax extends Exchange {
         return this.safeString (statuses, status, status);
     }
 
-    parseOrder (order, market: Market = undefined): Order {
+    parseOrder (order: Dict, market: Market = undefined): Order {
         //
         // createOrder, fetchOrders, fetchOrder
         //
@@ -1139,7 +1147,7 @@ export default class novadax extends Exchange {
         }, market);
     }
 
-    async transfer (code: string, amount, fromAccount, toAccount, params = {}) {
+    async transfer (code: string, amount: number, fromAccount: string, toAccount:string, params = {}): Promise<TransferEntry> {
         /**
          * @method
          * @name novadax#transfer
@@ -1160,7 +1168,7 @@ export default class novadax extends Exchange {
         // master-transfer-in = from master account to subaccount
         // master-transfer-out = from subaccount to master account
         const type = (fromAccount === 'main') ? 'master-transfer-in' : 'master-transfer-out';
-        const request = {
+        const request: Dict = {
             'transferAmount': this.currencyToPrecision (code, amount),
             'currency': currency['id'],
             'subId': (type === 'master-transfer-in') ? toAccount : fromAccount,
@@ -1176,7 +1184,7 @@ export default class novadax extends Exchange {
         //
         const transfer = this.parseTransfer (response, currency);
         const transferOptions = this.safeValue (this.options, 'transfer', {});
-        const fillResponseFromRequest = this.safeValue (transferOptions, 'fillResponseFromRequest', true);
+        const fillResponseFromRequest = this.safeBool (transferOptions, 'fillResponseFromRequest', true);
         if (fillResponseFromRequest) {
             transfer['fromAccount'] = fromAccount;
             transfer['toAccount'] = toAccount;
@@ -1185,7 +1193,7 @@ export default class novadax extends Exchange {
         return transfer;
     }
 
-    parseTransfer (transfer, currency: Currency = undefined) {
+    parseTransfer (transfer: Dict, currency: Currency = undefined): TransferEntry {
         //
         //    {
         //        "code":"A10000",
@@ -1200,7 +1208,6 @@ export default class novadax extends Exchange {
             'info': transfer,
             'id': id,
             'amount': undefined,
-            'code': currencyCode, // kept here for backward-compatibility, but will be removed soon
             'currency': currencyCode,
             'fromAccount': undefined,
             'toAccount': undefined,
@@ -1210,14 +1217,14 @@ export default class novadax extends Exchange {
         };
     }
 
-    parseTransferStatus (status) {
-        const statuses = {
+    parseTransferStatus (status: Str): Str {
+        const statuses: Dict = {
             'SUCCESS': 'pending',
         };
         return this.safeString (statuses, status, 'failed');
     }
 
-    async withdraw (code: string, amount, address, tag = undefined, params = {}) {
+    async withdraw (code: string, amount: number, address: string, tag = undefined, params = {}) {
         /**
          * @method
          * @name novadax#withdraw
@@ -1233,7 +1240,7 @@ export default class novadax extends Exchange {
         [ tag, params ] = this.handleWithdrawTagAndParams (tag, params);
         await this.loadMarkets ();
         const currency = this.currency (code);
-        const request = {
+        const request: Dict = {
             'code': currency['id'],
             'amount': this.currencyToPrecision (code, amount),
             'wallet': address,
@@ -1252,7 +1259,7 @@ export default class novadax extends Exchange {
         return this.parseTransaction (response, currency);
     }
 
-    async fetchAccounts (params = {}) {
+    async fetchAccounts (params = {}): Promise<Account[]> {
         /**
          * @method
          * @name novadax#fetchAccounts
@@ -1304,7 +1311,7 @@ export default class novadax extends Exchange {
          * @param {object} [params] extra parameters specific to the exchange API endpoint
          * @returns {object[]} a list of [transaction structures]{@link https://docs.ccxt.com/#/?id=transaction-structure}
          */
-        const request = {
+        const request: Dict = {
             'type': 'coin_in',
         };
         return await this.fetchDepositsWithdrawals (code, since, limit, this.extend (request, params));
@@ -1322,7 +1329,7 @@ export default class novadax extends Exchange {
          * @param {object} [params] extra parameters specific to the exchange API endpoint
          * @returns {object[]} a list of [transaction structures]{@link https://docs.ccxt.com/#/?id=transaction-structure}
          */
-        const request = {
+        const request: Dict = {
             'type': 'coin_out',
         };
         return await this.fetchDepositsWithdrawals (code, since, limit, this.extend (request, params));
@@ -1341,7 +1348,7 @@ export default class novadax extends Exchange {
          * @returns {object} a list of [transaction structure]{@link https://docs.ccxt.com/#/?id=transaction-structure}
          */
         await this.loadMarkets ();
-        const request = {
+        const request: Dict = {
             // 'currency': currency['id'],
             // 'type': 'coin_in', // 'coin_out'
             // 'direct': 'asc', // 'desc'
@@ -1378,18 +1385,18 @@ export default class novadax extends Exchange {
         //         "message": "Success"
         //     }
         //
-        const data = this.safeValue (response, 'data', []);
+        const data = this.safeList (response, 'data', []);
         return this.parseTransactions (data, currency, since, limit);
     }
 
-    parseTransactionStatus (status) {
+    parseTransactionStatus (status: Str) {
         // Pending the record is wait broadcast to chain
         // x/M confirming the comfirming state of tx, the M is total confirmings needed
         // SUCCESS the record is success full
         // FAIL the record failed
         const parts = status.split (' ');
         status = this.safeString (parts, 1, status);
-        const statuses = {
+        const statuses: Dict = {
             'Pending': 'pending',
             'confirming': 'pending',
             'SUCCESS': 'ok',
@@ -1398,7 +1405,7 @@ export default class novadax extends Exchange {
         return this.safeString (statuses, status, status);
     }
 
-    parseTransaction (transaction, currency: Currency = undefined): Transaction {
+    parseTransaction (transaction: Dict, currency: Currency = undefined): Transaction {
         //
         // withdraw
         //
@@ -1482,7 +1489,7 @@ export default class novadax extends Exchange {
          * @returns {Trade[]} a list of [trade structures]{@link https://docs.ccxt.com/#/?id=trade-structure}
          */
         await this.loadMarkets ();
-        const request = {
+        const request: Dict = {
             //  'orderId': id, // Order ID, string
             //  'symbol': market['id'], // The trading symbol, like BTC_BRL, string
             //  'fromId': fromId, // Search fill id to begin with, string
@@ -1525,7 +1532,7 @@ export default class novadax extends Exchange {
         //          "message": "Success"
         //      }
         //
-        const data = this.safeValue (response, 'data', []);
+        const data = this.safeList (response, 'data', []);
         return this.parseTrades (data, market, since, limit);
     }
 
@@ -1561,7 +1568,7 @@ export default class novadax extends Exchange {
         return { 'url': url, 'method': method, 'body': body, 'headers': headers };
     }
 
-    handleErrors (code, reason, url, method, headers, body, response, requestHeaders, requestBody) {
+    handleErrors (code: int, reason: string, url: string, method: string, headers: Dict, body: string, response, requestHeaders, requestBody) {
         if (response === undefined) {
             return undefined;
         }

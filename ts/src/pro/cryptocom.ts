@@ -2,10 +2,10 @@
 //  ---------------------------------------------------------------------------
 
 import cryptocomRest from '../cryptocom.js';
-import { AuthenticationError, NetworkError } from '../base/errors.js';
+import { AuthenticationError, InvalidNonce, NetworkError } from '../base/errors.js';
 import { ArrayCache, ArrayCacheByTimestamp, ArrayCacheBySymbolById, ArrayCacheBySymbolBySide } from '../base/ws/Cache.js';
 import { sha256 } from '../static_dependencies/noble-hashes/sha256.js';
-import type { Int, OrderSide, OrderType, Str, Strings, OrderBook, Order, Trade, Ticker, OHLCV, Position, Balances } from '../base/types.js';
+import type { Int, OrderSide, OrderType, Str, Strings, OrderBook, Order, Trade, Ticker, OHLCV, Position, Balances, Num, Dict } from '../base/types.js';
 import Client from '../base/ws/Client.js';
 
 //  ---------------------------------------------------------------------------
@@ -17,7 +17,7 @@ export default class cryptocom extends cryptocomRest {
                 'ws': true,
                 'watchBalance': true,
                 'watchTicker': true,
-                'watchTickers': false, // for now
+                'watchTickers': false,
                 'watchMyTrades': true,
                 'watchTrades': true,
                 'watchTradesForSymbols': true,
@@ -76,6 +76,8 @@ export default class cryptocom extends cryptocomRest {
          * @param {string} symbol unified symbol of the market to fetch the order book for
          * @param {int} [limit] the maximum amount of order book entries to return
          * @param {object} [params] extra parameters specific to the exchange API endpoint
+         * @param {string} [params.bookSubscriptionType] The subscription type. Allowed values: SNAPSHOT full snapshot. This is the default if not specified. SNAPSHOT_AND_UPDATE delta updates
+         * @param {int} [params.bookUpdateFrequency] Book update interval in ms. Allowed values: 100 for snapshot subscription 10 for delta subscription
          * @returns {object} A dictionary of [order book structures]{@link https://docs.ccxt.com/#/?id=order-book-structure} indexed by market symbols
          */
         return await this.watchOrderBookForSymbols ([ symbol ], limit, params);
@@ -90,59 +92,147 @@ export default class cryptocom extends cryptocomRest {
          * @param {string[]} symbols unified array of symbols
          * @param {int} [limit] the maximum amount of order book entries to return
          * @param {object} [params] extra parameters specific to the exchange API endpoint
+         * @param {string} [params.bookSubscriptionType] The subscription type. Allowed values: SNAPSHOT full snapshot. This is the default if not specified. SNAPSHOT_AND_UPDATE delta updates
+         * @param {int} [params.bookUpdateFrequency] Book update interval in ms. Allowed values: 100 for snapshot subscription 10 for delta subscription
          * @returns {object} A dictionary of [order book structures]{@link https://docs.ccxt.com/#/?id=order-book-structure} indexed by market symbols
          */
         await this.loadMarkets ();
         symbols = this.marketSymbols (symbols);
         const topics = [];
+        const messageHashes = [];
+        if (!limit) {
+            limit = 50;
+        }
+        const topicParams = this.safeValue (params, 'params');
+        if (topicParams === undefined) {
+            params['params'] = {};
+        }
+        let bookSubscriptionType = undefined;
+        let bookSubscriptionType2 = undefined;
+        [ bookSubscriptionType, params ] = this.handleOptionAndParams (params, 'watchOrderBook', 'bookSubscriptionType', 'SNAPSHOT_AND_UPDATE');
+        [ bookSubscriptionType2, params ] = this.handleOptionAndParams (params, 'watchOrderBookForSymbols', 'bookSubscriptionType', bookSubscriptionType);
+        params['params']['bookSubscriptionType'] = bookSubscriptionType2;
+        let bookUpdateFrequency = undefined;
+        let bookUpdateFrequency2 = undefined;
+        [ bookUpdateFrequency, params ] = this.handleOptionAndParams (params, 'watchOrderBook', 'bookUpdateFrequency');
+        [ bookUpdateFrequency2, params ] = this.handleOptionAndParams (params, 'watchOrderBookForSymbols', 'bookUpdateFrequency', bookUpdateFrequency);
+        if (bookUpdateFrequency2 !== undefined) {
+            params['params']['bookSubscriptionType'] = bookUpdateFrequency2;
+        }
         for (let i = 0; i < symbols.length; i++) {
             const symbol = symbols[i];
             const market = this.market (symbol);
-            const currentTopic = 'book' + '.' + market['id'];
+            const currentTopic = 'book' + '.' + market['id'] + '.' + limit.toString ();
+            const messageHash = 'orderbook:' + market['symbol'];
+            messageHashes.push (messageHash);
             topics.push (currentTopic);
         }
-        const orderbook = await this.watchPublicMultiple (topics, topics, params);
+        const orderbook = await this.watchPublicMultiple (messageHashes, topics, params);
         return orderbook.limit ();
     }
 
-    handleOrderBookSnapshot (client: Client, message) {
-        // full snapshot
+    handleDelta (bookside, delta) {
+        const price = this.safeFloat (delta, 0);
+        const amount = this.safeFloat (delta, 1);
+        const count = this.safeInteger (delta, 2);
+        bookside.storeArray ([ price, amount, count ]);
+    }
+
+    handleDeltas (bookside, deltas) {
+        for (let i = 0; i < deltas.length; i++) {
+            this.handleDelta (bookside, deltas[i]);
+        }
+    }
+
+    handleOrderBook (client: Client, message) {
         //
-        // {
-        //     "instrument_name":"LTC_USDT",
-        //     "subscription":"book.LTC_USDT.150",
-        //     "channel":"book",
-        //     "depth":150,
-        //     "data": [
-        //          {
-        //              "bids": [
-        //                  [122.21, 0.74041, 4]
-        //              ],
-        //              "asks": [
-        //                  [122.29, 0.00002, 1]
-        //              ]
-        //              "t": 1648123943803,
-        //              "s":754560122
-        //          }
-        //      ]
-        // }
+        // snapshot
+        //    {
+        //        "instrument_name":"LTC_USDT",
+        //        "subscription":"book.LTC_USDT.150",
+        //        "channel":"book",
+        //        "depth":150,
+        //        "data": [
+        //             {
+        //                 "bids": [
+        //                     [122.21, 0.74041, 4]
+        //                 ],
+        //                 "asks": [
+        //                     [122.29, 0.00002, 1]
+        //                 ]
+        //                 "t": 1648123943803,
+        //                 "s":754560122
+        //             }
+        //         ]
+        //    }
+        //  update
+        //    {
+        //        "instrument_name":"BTC_USDT",
+        //        "subscription":"book.BTC_USDT.50",
+        //        "channel":"book.update",
+        //        "depth":50,
+        //        "data":[
+        //           {
+        //              "update":{
+        //                 "asks":[
+        //                    [
+        //                       "43755.46",
+        //                       "0.10000",
+        //                       "1"
+        //                    ],
+        //                    ...
+        //                 ],
+        //                 "bids":[
+        //                    [
+        //                       "43737.46",
+        //                       "0.14096",
+        //                       "1"
+        //                    ],
+        //                    ...
+        //                 ]
+        //              },
+        //              "t":1704484068898,
+        //              "tt":1704484068892,
+        //              "u":78795598253024,
+        //              "pu":78795598162080,
+        //              "cs":-781431132
+        //           }
+        //        ]
+        //    }
         //
-        const messageHash = this.safeString (message, 'subscription');
         const marketId = this.safeString (message, 'instrument_name');
         const market = this.safeMarket (marketId);
         const symbol = market['symbol'];
         let data = this.safeValue (message, 'data');
         data = this.safeValue (data, 0);
         const timestamp = this.safeInteger (data, 't');
-        const snapshot = this.parseOrderBook (data, symbol, timestamp);
-        snapshot['nonce'] = this.safeInteger (data, 's');
-        let orderbook = this.safeValue (this.orderbooks, symbol);
-        if (orderbook === undefined) {
+        if (!(symbol in this.orderbooks)) {
             const limit = this.safeInteger (message, 'depth');
-            orderbook = this.orderBook ({}, limit);
+            this.orderbooks[symbol] = this.countedOrderBook ({}, limit);
         }
-        orderbook.reset (snapshot);
+        const orderbook = this.orderbooks[symbol];
+        const channel = this.safeString (message, 'channel');
+        const nonce = this.safeInteger2 (data, 'u', 's');
+        let books = data;
+        if (channel === 'book') {  // snapshot
+            orderbook.reset ({});
+            orderbook['symbol'] = symbol;
+            orderbook['timestamp'] = timestamp;
+            orderbook['datetime'] = this.iso8601 (timestamp);
+            orderbook['nonce'] = nonce;
+        } else {
+            books = this.safeValue (data, 'update', {});
+            const previousNonce = this.safeInteger (data, 'pu');
+            const currentNonce = orderbook['nonce'];
+            if (currentNonce !== previousNonce) {
+                throw new InvalidNonce (this.id + ' watchOrderBook() ' + symbol + ' ' + previousNonce + ' != ' + nonce);
+            }
+        }
+        this.handleDeltas (orderbook['asks'], this.safeValue (books, 'asks', []));
+        this.handleDeltas (orderbook['bids'], this.safeValue (books, 'bids', []));
+        orderbook['nonce'] = nonce;
         this.orderbooks[symbol] = orderbook;
+        const messageHash = 'orderbook:' + symbol;
         client.resolve (orderbook, messageHash);
     }
 
@@ -469,7 +559,7 @@ export default class cryptocom extends cryptocomRest {
         await this.authenticate ();
         const url = this.urls['api']['ws']['private'];
         const id = this.nonce ();
-        const request = {
+        const request: Dict = {
             'method': 'subscribe',
             'params': {
                 'channels': [ 'user.position_balance' ],
@@ -484,7 +574,7 @@ export default class cryptocom extends cryptocomRest {
         const client = this.client (url);
         this.setPositionsCache (client, symbols);
         const fetchPositionsSnapshot = this.handleOption ('watchPositions', 'fetchPositionsSnapshot', true);
-        const awaitPositionsSnapshot = this.safeValue ('watchPositions', 'awaitPositionsSnapshot', true);
+        const awaitPositionsSnapshot = this.safeBool ('watchPositions', 'awaitPositionsSnapshot', true);
         if (fetchPositionsSnapshot && awaitPositionsSnapshot && this.positions === undefined) {
             const snapshot = await client.future ('fetchPositionsSnapshot');
             return this.filterBySymbolsSinceLimit (snapshot, symbols, since, limit, true);
@@ -659,7 +749,7 @@ export default class cryptocom extends cryptocomRest {
         client.resolve (this.balance, messageHashRequest);
     }
 
-    async createOrderWs (symbol: string, type: OrderType, side: OrderSide, amount: number, price: number = undefined, params = {}): Promise<Order> {
+    async createOrderWs (symbol: string, type: OrderType, side: OrderSide, amount: number, price: Num = undefined, params = {}): Promise<Order> {
         /**
          * @method
          * @name cryptocom#createOrderWs
@@ -675,7 +765,7 @@ export default class cryptocom extends cryptocomRest {
          */
         await this.loadMarkets ();
         params = this.createOrderRequest (symbol, type, side, amount, price, params);
-        const request = {
+        const request: Dict = {
             'method': 'private/create-order',
             'params': params,
         };
@@ -716,7 +806,7 @@ export default class cryptocom extends cryptocomRest {
         params = this.extend ({
             'order_id': id,
         }, params);
-        const request = {
+        const request: Dict = {
             'method': 'private/cancel-order',
             'params': params,
         };
@@ -736,7 +826,7 @@ export default class cryptocom extends cryptocomRest {
          */
         await this.loadMarkets ();
         let market = undefined;
-        const request = {
+        const request: Dict = {
             'method': 'private/cancel-all-orders',
             'params': this.extend ({}, params),
         };
@@ -763,7 +853,7 @@ export default class cryptocom extends cryptocomRest {
     async watchPublic (messageHash, params = {}) {
         const url = this.urls['api']['ws']['public'];
         const id = this.nonce ();
-        const request = {
+        const request: Dict = {
             'method': 'subscribe',
             'params': {
                 'channels': [ messageHash ],
@@ -777,21 +867,21 @@ export default class cryptocom extends cryptocomRest {
     async watchPublicMultiple (messageHashes, topics, params = {}) {
         const url = this.urls['api']['ws']['public'];
         const id = this.nonce ();
-        const request = {
+        const request: Dict = {
             'method': 'subscribe',
             'params': {
                 'channels': topics,
             },
             'nonce': id,
         };
-        const message = this.extend (request, params);
+        const message = this.deepExtend (request, params);
         return await this.watchMultiple (url, messageHashes, message, messageHashes);
     }
 
     async watchPrivateRequest (nonce, params = {}) {
         await this.authenticate ();
         const url = this.urls['api']['ws']['private'];
-        const request = {
+        const request: Dict = {
             'id': nonce,
             'nonce': nonce,
         };
@@ -803,7 +893,7 @@ export default class cryptocom extends cryptocomRest {
         await this.authenticate ();
         const url = this.urls['api']['ws']['private'];
         const id = this.nonce ();
-        const request = {
+        const request: Dict = {
             'method': 'subscribe',
             'params': {
                 'channels': [ messageHash ],
@@ -849,11 +939,12 @@ export default class cryptocom extends cryptocomRest {
     }
 
     handleSubscribe (client: Client, message) {
-        const methods = {
+        const methods: Dict = {
             'candlestick': this.handleOHLCV,
             'ticker': this.handleTicker,
             'trade': this.handleTrades,
-            'book': this.handleOrderBookSnapshot,
+            'book': this.handleOrderBook,
+            'book.update': this.handleOrderBook,
             'user.order': this.handleOrders,
             'user.trade': this.handleTrades,
             'user.balance': this.handleBalance,
@@ -910,7 +1001,7 @@ export default class cryptocom extends cryptocomRest {
             return;
         }
         const method = this.safeString (message, 'method');
-        const methods = {
+        const methods: Dict = {
             '': this.handlePing,
             'public/heartbeat': this.handlePing,
             'public/auth': this.handleAuthenticate,
@@ -938,7 +1029,7 @@ export default class cryptocom extends cryptocomRest {
             const nonce = this.nonce ().toString ();
             const auth = method + nonce + this.apiKey + nonce;
             const signature = this.hmac (this.encode (auth), this.encode (this.secret), sha256);
-            const request = {
+            const request: Dict = {
                 'id': nonce,
                 'nonce': nonce,
                 'method': method,
@@ -948,7 +1039,7 @@ export default class cryptocom extends cryptocomRest {
             const message = this.extend (request, params);
             this.watch (url, messageHash, message, messageHash);
         }
-        return future;
+        return await future;
     }
 
     handlePing (client: Client, message) {

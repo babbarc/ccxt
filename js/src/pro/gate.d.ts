@@ -1,5 +1,5 @@
 import gateRest from '../gate.js';
-import type { Int, Str, Strings, OrderBook, Order, Trade, Ticker, Tickers, OHLCV, Position, Balances } from '../base/types.js';
+import type { Int, Str, Strings, OrderBook, Order, Trade, Ticker, Tickers, OHLCV, Position, Balances, Liquidation } from '../base/types.js';
 import Client from '../base/ws/Client.js';
 export default class gate extends gateRest {
     describe(): any;
@@ -12,6 +12,10 @@ export default class gate extends gateRest {
     watchTicker(symbol: string, params?: {}): Promise<Ticker>;
     watchTickers(symbols?: Strings, params?: {}): Promise<Tickers>;
     handleTicker(client: Client, message: any): void;
+    watchBidsAsks(symbols?: Strings, params?: {}): Promise<Tickers>;
+    handleBidAsk(client: Client, message: any): void;
+    subscribeWatchTickersAndBidsAsks(symbols?: Strings, callerMethodName?: Str, params?: {}): Promise<Tickers>;
+    handleTickerAndBidAsk(objectName: string, client: Client, message: any): void;
     watchTrades(symbol: string, since?: Int, limit?: Int, params?: {}): Promise<Trade[]>;
     watchTradesForSymbols(symbols: string[], since?: Int, limit?: Int, params?: {}): Promise<Trade[]>;
     handleTrades(client: Client, message: any): void;
@@ -27,6 +31,10 @@ export default class gate extends gateRest {
     handlePositions(client: any, message: any): void;
     watchOrders(symbol?: Str, since?: Int, limit?: Int, params?: {}): Promise<Order[]>;
     handleOrder(client: Client, message: any): void;
+    watchMyLiquidations(symbol: string, since?: Int, limit?: Int, params?: {}): Promise<Liquidation[]>;
+    watchMyLiquidationsForSymbols(symbols?: string[], since?: Int, limit?: Int, params?: {}): Promise<Liquidation[]>;
+    handleLiquidation(client: Client, message: any): void;
+    parseWsLiquidation(liquidation: any, market?: any): Liquidation;
     handleErrorMessage(client: Client, message: any): boolean;
     handleBalanceSubscription(client: Client, message: any, subscription?: any): void;
     handleSubscriptionStatus(client: Client, message: any): void;

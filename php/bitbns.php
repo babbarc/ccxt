@@ -26,6 +26,7 @@ class bitbns extends Exchange {
                 'swap' => false,
                 'future' => false,
                 'option' => null, // coming soon
+                'cancelAllOrders' => false,
                 'cancelOrder' => true,
                 'createOrder' => true,
                 'fetchBalance' => true,
@@ -177,7 +178,7 @@ class bitbns extends Exchange {
         );
     }
 
-    public function fetch_markets($params = array ()) {
+    public function fetch_markets($params = array ()): array {
         /**
          * retrieves data on all markets for bitbns
          * @param {array} [$params] extra parameters specific to the exchange API endpoint
@@ -293,7 +294,7 @@ class bitbns extends Exchange {
         if ($limit !== null) {
             $request['limit'] = $limit; // default 100, max 5000, see https://github.com/binance-exchange/binance-official-api-docs/blob/master/rest-api.md#order-book
         }
-        $response = $this->wwwGetOrderFetchOrderbook (array_merge($request, $params));
+        $response = $this->wwwGetOrderFetchOrderbook ($this->extend($request, $params));
         //
         //     {
         //         "bids":[
@@ -315,7 +316,7 @@ class bitbns extends Exchange {
         return $this->parse_order_book($response, $market['symbol'], $timestamp);
     }
 
-    public function parse_ticker($ticker, ?array $market = null): array {
+    public function parse_ticker(array $ticker, ?array $market = null): array {
         //
         //     {
         //         "symbol":"BTC/INR",
@@ -491,7 +492,7 @@ class bitbns extends Exchange {
         return $this->safe_string($statuses, $status, $status);
     }
 
-    public function parse_order($order, ?array $market = null): array {
+    public function parse_order(array $order, ?array $market = null): array {
         //
         // createOrder
         //
@@ -570,7 +571,7 @@ class bitbns extends Exchange {
         ), $market);
     }
 
-    public function create_order(string $symbol, string $type, string $side, $amount, $price = null, $params = array ()) {
+    public function create_order(string $symbol, string $type, string $side, float $amount, ?float $price = null, $params = array ()) {
         /**
          * create a trade order
          * @see https://docs.bitbns.com/bitbns/rest-endpoints/order-apis/version-2/place-orders
@@ -618,7 +619,7 @@ class bitbns extends Exchange {
         if ($trailRate !== null) {
             $request['trail_rate'] = $this->price_to_precision($symbol, $trailRate);
         }
-        $response = $this->$method (array_merge($request, $params));
+        $response = $this->$method ($this->extend($request, $params));
         //
         //     {
         //         "data":"Successfully placed bid to purchase currency",
@@ -658,7 +659,7 @@ class bitbns extends Exchange {
         $quoteSide = ($market['quoteId'] === 'USDT') ? 'usdtcancel' : 'cancel';
         $quoteSide .= $tail;
         $request['side'] = $quoteSide;
-        $response = $this->v2PostCancel (array_merge($request, $params));
+        $response = $this->v2PostCancel ($this->extend($request, $params));
         return $this->parse_order($response, $market);
     }
 
@@ -684,7 +685,7 @@ class bitbns extends Exchange {
         if ($trigger) {
             throw new BadRequest($this->id . ' fetchOrder cannot fetch stop orders');
         }
-        $response = $this->v1PostOrderStatusSymbol (array_merge($request, $params));
+        $response = $this->v1PostOrderStatusSymbol ($this->extend($request, $params));
         //
         //     {
         //         "data":array(
@@ -711,7 +712,7 @@ class bitbns extends Exchange {
         //     }
         //
         $data = $this->safe_value($response, 'data', array());
-        $first = $this->safe_value($data, 0);
+        $first = $this->safe_dict($data, 0);
         return $this->parse_order($first, $market);
     }
 
@@ -740,7 +741,7 @@ class bitbns extends Exchange {
             'page' => 0,
             'side' => $isTrigger ? ($quoteSide . 'StopOrders') : ($quoteSide . 'Orders'),
         );
-        $response = $this->v2PostGetordersnew (array_merge($request, $params));
+        $response = $this->v2PostGetordersnew ($this->extend($request, $params));
         //
         //     {
         //         "data":array(
@@ -761,11 +762,11 @@ class bitbns extends Exchange {
         //         "code":200
         //     }
         //
-        $data = $this->safe_value($response, 'data', array());
+        $data = $this->safe_list($response, 'data', array());
         return $this->parse_orders($data, $market, $since, $limit);
     }
 
-    public function parse_trade($trade, ?array $market = null): array {
+    public function parse_trade(array $trade, ?array $market = null): array {
         //
         // fetchMyTrades
         //
@@ -867,7 +868,7 @@ class bitbns extends Exchange {
         if ($since !== null) {
             $request['since'] = $this->iso8601($since);
         }
-        $response = $this->v1PostListExecutedOrdersSymbol (array_merge($request, $params));
+        $response = $this->v1PostListExecutedOrdersSymbol ($this->extend($request, $params));
         //
         //     {
         //         "data" => array(
@@ -909,7 +910,7 @@ class bitbns extends Exchange {
         //         "code" => 200
         //     }
         //
-        $data = $this->safe_value($response, 'data', array());
+        $data = $this->safe_list($response, 'data', array());
         return $this->parse_trades($data, $market, $since, $limit);
     }
 
@@ -931,7 +932,7 @@ class bitbns extends Exchange {
             'coin' => $market['baseId'],
             'market' => $market['quoteId'],
         );
-        $response = $this->wwwGetExchangeDataTradedetails (array_merge($request, $params));
+        $response = $this->wwwGetExchangeDataTradedetails ($this->extend($request, $params));
         //
         //     [
         //         array("tradeId":"1909151","price":"61904.6300","quote_volume":1618.05,"base_volume":0.02607254,"timestamp":1634548602000,"type":"buy"),
@@ -960,7 +961,7 @@ class bitbns extends Exchange {
             'symbol' => $currency['id'],
             'page' => 0,
         );
-        $response = $this->v1PostDepositHistorySymbol (array_merge($request, $params));
+        $response = $this->v1PostDepositHistorySymbol ($this->extend($request, $params));
         //
         //     {
         //         "data":array(
@@ -984,7 +985,7 @@ class bitbns extends Exchange {
         //         "code":200
         //     }
         //
-        $data = $this->safe_value($response, 'data', array());
+        $data = $this->safe_list($response, 'data', array());
         return $this->parse_transactions($data, $currency, $since, $limit);
     }
 
@@ -1006,11 +1007,11 @@ class bitbns extends Exchange {
             'symbol' => $currency['id'],
             'page' => 0,
         );
-        $response = $this->v1PostWithdrawHistorySymbol (array_merge($request, $params));
+        $response = $this->v1PostWithdrawHistorySymbol ($this->extend($request, $params));
         //
         //     ...
         //
-        $data = $this->safe_value($response, 'data', array());
+        $data = $this->safe_list($response, 'data', array());
         return $this->parse_transactions($data, $currency, $since, $limit);
     }
 
@@ -1034,7 +1035,7 @@ class bitbns extends Exchange {
         return $this->safe_string($statuses, $status, $status);
     }
 
-    public function parse_transaction($transaction, ?array $currency = null): array {
+    public function parse_transaction(array $transaction, ?array $currency = null): array {
         //
         // fetchDeposits
         //
@@ -1114,7 +1115,7 @@ class bitbns extends Exchange {
         $request = array(
             'symbol' => $currency['id'],
         );
-        $response = $this->v1PostGetCoinAddressSymbol (array_merge($request, $params));
+        $response = $this->v1PostGetCoinAddressSymbol ($this->extend($request, $params));
         //
         //     {
         //         "data":array(
@@ -1180,7 +1181,7 @@ class bitbns extends Exchange {
         return array( 'url' => $url, 'method' => $method, 'body' => $body, 'headers' => $headers );
     }
 
-    public function handle_errors($httpCode, $reason, $url, $method, $headers, $body, $response, $requestHeaders, $requestBody) {
+    public function handle_errors(int $httpCode, string $reason, string $url, string $method, array $headers, string $body, $response, $requestHeaders, $requestBody) {
         if ($response === null) {
             return null; // fallback to default $error handler
         }
